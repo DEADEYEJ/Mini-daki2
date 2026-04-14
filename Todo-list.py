@@ -9,6 +9,9 @@
 
 # Split data into train / test (If enough data Validation)
 
+# Test Split
+"6,9,12,19,22,24,28,29,34,39,42,52,56,68,72"
+
 # Extract / make features
     # Crown data for HOG
         # implement Crown detection
