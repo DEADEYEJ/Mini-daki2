@@ -22,10 +22,7 @@ knn_classifier.fit(X, y)
 
 # Selve hoveddelen af programmet, hvor den printer de forskellgie info og indlæser et billede
 def main():
-    print("+-------------------------------+")
-    print("| King Domino points calculator |")
-    print("+-------------------------------+")
-    image_path = r"C:\Users\danie\Downloads\King Domino dataset\57.jpg"
+    image_path = r"King Domino dataset\57.jpg"
     if not os.path.isfile(image_path):
         print("Image not found")
         return

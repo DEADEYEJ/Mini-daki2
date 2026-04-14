@@ -4,7 +4,7 @@ import os
 
 
 def main():
-    image_path = r"King Domino dataset\10.jpg" # der er brugt jpg nr. 1, 13, 45, 65, 22 og 42 til test af hsv
+    image_path = r"King Domino dataset\10.jpg"
     if not os.path.isfile(image_path):
         print("Image not found")
         return
