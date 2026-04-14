@@ -374,8 +374,8 @@ image,tile_x,tile_y,hue,saturation,value,label
 26.jpg,2,4,105,252,197,Lake
 26.jpg,3,4,106,252,195,Lake
 26.jpg,4,4,106,251,186,Lake
-27.jpg,0,0,43,207,160,Grassland
-27.jpg,1,0,44,202,155,Grassland
+27.jpg,0,0,43,207,160,Field
+27.jpg,1,0,44,202,155,Field
 27.jpg,2,0,26,239,195,Field
 27.jpg,3,0,26,241,191,Field
 27.jpg,4,0,26,239,190,Field
