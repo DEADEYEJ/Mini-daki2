@@ -2,7 +2,7 @@
 
 # Find Ground truth
     # Total point score for pic's
-    # Amount of crowns on board
+    # Amount of crowns on board/tile
     # Features for tile types
     # 
 
