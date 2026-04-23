@@ -1,209 +1,317 @@
-#!/usr/bin/env python3
-"""
-Template matching for crowns / markers with support for multiple rotations.
-
-Usage:
-    python template_match_crowns.py \
-        --image 2.jpg \
-        --templates crown_0.png crown_90.png crown_180.png crown_270.png \
-        --threshold 0.86 \
-        --output detections.png \
-        --json detections.json
-
-Notes:
-- PNG templates with transparency are supported. The alpha channel is used as a mask.
-- The script runs template matching for each template and merges overlapping detections.
-- Start with a threshold around 0.82-0.90 and adjust based on your data.
-"""
-
-import argparse
-import json
-from pathlib import Path
-
 import cv2
 import numpy as np
+import pandas as pd
+from pathlib import Path
+
+# =========================
+# INDSTILLINGER
+# =========================
+IMAGE_PATH = "King Domino dataset/73.jpg"
+TEMPLATES_DIR = "templates"
+CSV_PATH = "tiles_hsv.csv"   # valgfri, sæt til None hvis du ikke vil evaluere
+MATCH_THRESHOLD = 0.91
+MIN_DISTANCE = 10            # minimum afstand mellem to kroner i samme tile
+GRID_SIZE = 5
+
+VALID_TEMPLATE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
-def load_template(path: str):
-    """Load template and optional alpha mask."""
-    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+# =========================
+# TILE OPDELING
+# =========================
+def get_tiles(image):
+    tiles = []
+
+    height, width, _ = image.shape
+    tile_h = height // GRID_SIZE
+    tile_w = width // GRID_SIZE
+
+    for y in range(GRID_SIZE):
+        row = []
+        for x in range(GRID_SIZE):
+            tile = image[y*tile_h:(y+1)*tile_h, x*tile_w:(x+1)*tile_w]
+            row.append(tile)
+        tiles.append(row)
+
+    return tiles
+
+
+# =========================
+# TEMPLATE LOADING
+# =========================
+def load_template(path):
+    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if raw is None:
-        raise FileNotFoundError(f"Could not read template: {path}")
+        raise FileNotFoundError(f"Kunne ikke læse template: {path}")
 
     if raw.ndim == 2:
-        rgb = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+        bgr = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
         mask = None
     elif raw.shape[2] == 4:
-        rgb = raw[:, :, :3]
+        bgr = raw[:, :, :3]
         alpha = raw[:, :, 3]
-        # Binary-ish mask; ignore fully transparent pixels
         mask = np.where(alpha > 0, 255, 0).astype(np.uint8)
         if cv2.countNonZero(mask) == 0:
             mask = None
     else:
-        rgb = raw[:, :, :3]
+        bgr = raw[:, :, :3]
         mask = None
 
-    return rgb, mask
+    return bgr, mask
 
 
-def match_single_template(image_bgr, template_bgr, mask, threshold, template_name):
-    """Run masked template matching and return raw detections."""
-    img_gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    tpl_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+def load_templates(folder):
+    folder = Path(folder)
+    if not folder.exists():
+        raise FileNotFoundError(f"Template-mappen findes ikke: {folder}")
 
-    # Light normalization helps on screenshots/photos with different lighting
-    img_gray = cv2.equalizeHist(img_gray)
-    tpl_gray = cv2.equalizeHist(tpl_gray)
+    template_paths = sorted(
+        p for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in VALID_TEMPLATE_SUFFIXES
+    )
 
-    # TM_CCORR_NORMED works well with masks in OpenCV
-    if mask is not None:
-        result = cv2.matchTemplate(img_gray, tpl_gray, cv2.TM_CCORR_NORMED, mask=mask)
-    else:
-        result = cv2.matchTemplate(img_gray, tpl_gray, cv2.TM_CCORR_NORMED)
+    if not template_paths:
+        raise FileNotFoundError(f"Ingen templates fundet i: {folder}")
 
-    ys, xs = np.where(result >= threshold)
-    h, w = tpl_gray.shape[:2]
-
-    detections = []
-    for (x, y) in zip(xs, ys):
-        score = float(result[y, x])
-        detections.append({
-            "x": int(x),
-            "y": int(y),
-            "w": int(w),
-            "h": int(h),
-            "score": score,
-            "template": Path(template_name).name,
-            "center_x": int(x + w / 2),
-            "center_y": int(y + h / 2),
+    templates = []
+    for path in template_paths:
+        tpl_bgr, tpl_mask = load_template(path)
+        templates.append({
+            "name": path.name,
+            "image": tpl_bgr,
+            "mask": tpl_mask
         })
 
-    return detections, result
+    return templates
 
 
-def iou(a, b):
-    ax1, ay1 = a["x"], a["y"]
-    ax2, ay2 = ax1 + a["w"], ay1 + a["h"]
-    bx1, by1 = b["x"], b["y"]
-    bx2, by2 = bx1 + b["w"], by1 + b["h"]
-
-    inter_x1 = max(ax1, bx1)
-    inter_y1 = max(ay1, by1)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-
-    inter_w = max(0, inter_x2 - inter_x1)
-    inter_h = max(0, inter_y2 - inter_y1)
-    inter = inter_w * inter_h
-
-    area_a = (ax2 - ax1) * (ay2 - ay1)
-    area_b = (bx2 - bx1) * (by2 - by1)
-    union = area_a + area_b - inter
-
-    return inter / union if union > 0 else 0.0
+# =========================
+# HJÆLPEFUNKTIONER
+# =========================
+def preprocess_gray(img_bgr):
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+    return gray
 
 
-def non_max_suppression(detections, overlap_threshold=0.25):
-    """Keep highest-score boxes when detections overlap."""
-    detections = sorted(detections, key=lambda d: d["score"], reverse=True)
+def point_distance(a, b):
+    return np.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+
+
+def non_max_peaks(peaks, min_distance):
+    """
+    peaks: liste af dicts med x, y, score, w, h
+    Beholder de stærkeste peaks og fjerner peaks der ligger for tæt.
+    """
+    peaks = sorted(peaks, key=lambda p: p["score"], reverse=True)
     kept = []
 
-    while detections:
-        best = detections.pop(0)
-        kept.append(best)
-        remaining = []
-        for det in detections:
-            if iou(best, det) < overlap_threshold:
-                remaining.append(det)
-        detections = remaining
+    for peak in peaks:
+        center = (peak["cx"], peak["cy"])
+        too_close = False
+
+        for kept_peak in kept:
+            kept_center = (kept_peak["cx"], kept_peak["cy"])
+            if point_distance(center, kept_center) < min_distance:
+                too_close = True
+                break
+
+        if not too_close:
+            kept.append(peak)
 
     return kept
 
 
-def draw_detections(image_bgr, detections):
+# =========================
+# MATCHING I EN TILE
+# =========================
+def find_crowns_in_tile(tile_bgr, templates, threshold=0.82, min_distance=10):
+    tile_gray = preprocess_gray(tile_bgr)
+    all_peaks = []
+
+    for tpl in templates:
+        tpl_bgr = tpl["image"]
+        tpl_mask = tpl["mask"]
+        tpl_gray = preprocess_gray(tpl_bgr)
+
+        th, tw = tpl_gray.shape[:2]
+        ih, iw = tile_gray.shape[:2]
+
+        # spring over hvis template er større end tile
+        if th > ih or tw > iw:
+            continue
+
+        if tpl_mask is not None:
+            result = cv2.matchTemplate(tile_gray, tpl_gray, cv2.TM_CCORR_NORMED, mask=tpl_mask)
+        else:
+            result = cv2.matchTemplate(tile_gray, tpl_gray, cv2.TM_CCORR_NORMED)
+
+        ys, xs = np.where(result >= threshold)
+
+        for x, y in zip(xs, ys):
+            score = float(result[y, x])
+            peak = {
+                "x": int(x),
+                "y": int(y),
+                "w": int(tw),
+                "h": int(th),
+                "cx": int(x + tw / 2),
+                "cy": int(y + th / 2),
+                "score": score,
+                "template": tpl["name"]
+            }
+            all_peaks.append(peak)
+
+    final_peaks = non_max_peaks(all_peaks, min_distance=min_distance)
+    return final_peaks
+
+
+# =========================
+# KØR PÅ HELE BILLEDET
+# =========================
+def count_crowns_per_tile(image_bgr, templates, threshold=0.82, min_distance=10):
+    tiles = get_tiles(image_bgr)
+
+    counts = []
+    detections_per_tile = []
+
+    for tile_y, row in enumerate(tiles):
+        count_row = []
+        det_row = []
+
+        for tile_x, tile in enumerate(row):
+            detections = find_crowns_in_tile(
+                tile,
+                templates,
+                threshold=threshold,
+                min_distance=min_distance
+            )
+            count_row.append(len(detections))
+            det_row.append(detections)
+
+        counts.append(count_row)
+        detections_per_tile.append(det_row)
+
+    return counts, detections_per_tile
+
+
+# =========================
+# TEGN RESULTAT
+# =========================
+def draw_tile_results(image_bgr, counts, detections_per_tile):
     out = image_bgr.copy()
-    for i, det in enumerate(detections, start=1):
-        x, y, w, h = det["x"], det["y"], det["w"], det["h"]
-        cv2.rectangle(out, (x, y), (x + w, y + h), (0, 0, 255), 2)
-        label = f'{i}: {det["score"]:.2f}'
-        cv2.putText(
-            out, label, (x, max(18, y - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA
-        )
+    height, width, _ = out.shape
+    tile_h = height // GRID_SIZE
+    tile_w = width // GRID_SIZE
+
+    for tile_y in range(GRID_SIZE):
+        for tile_x in range(GRID_SIZE):
+            x0 = tile_x * tile_w
+            y0 = tile_y * tile_h
+
+            # tegn tile-ramme
+            cv2.rectangle(out, (x0, y0), (x0 + tile_w, y0 + tile_h), (255, 0, 0), 1)
+
+            # skriv antal kroner i tile
+            label = str(counts[tile_y][tile_x])
+            cv2.putText(
+                out,
+                label,
+                (x0 + 5, y0 + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+
+            # tegn fund inde i tile
+            for det in detections_per_tile[tile_y][tile_x]:
+                dx1 = x0 + det["x"]
+                dy1 = y0 + det["y"]
+                dx2 = dx1 + det["w"]
+                dy2 = dy1 + det["h"]
+
+                cv2.rectangle(out, (dx1, dy1), (dx2, dy2), (0, 0, 255), 1)
+
     return out
 
 
+# =========================
+# CSV EVALUERING
+# =========================
+def evaluate_against_csv(counts, csv_path, image_name):
+    df = pd.read_csv(csv_path)
+
+    required = {"image", "tile_x", "tile_y", "crown"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV mangler kolonner: {sorted(missing)}")
+
+    df = df[df["image"] == image_name].copy()
+    if df.empty:
+        raise ValueError(f"Ingen rækker i CSV for image='{image_name}'")
+
+    predicted = []
+    actual = []
+
+    for _, row in df.iterrows():
+        tx = int(row["tile_x"])
+        ty = int(row["tile_y"])
+
+        if 0 <= ty < GRID_SIZE and 0 <= tx < GRID_SIZE:
+            predicted_count = counts[ty][tx]
+            actual_count = int(row["crown"])
+
+            predicted.append(predicted_count)
+            actual.append(actual_count)
+
+    if not actual:
+        raise ValueError("Ingen gyldige tiles at evaluere")
+
+    exact_matches = sum(int(p == a) for p, a in zip(predicted, actual))
+    exact_tile_accuracy = exact_matches / len(actual)
+
+    mae = np.mean([abs(p - a) for p, a in zip(predicted, actual)])
+
+    print("\nCSV evaluering pr. tile:")
+    print(f"Antal tiles evalueret: {len(actual)}")
+    print(f"Exact tile accuracy: {exact_tile_accuracy:.4f}")
+    print(f"MAE (gennemsnitlig fejl i crown count): {mae:.4f}")
+
+    print("\nDetaljer:")
+    for a, p in zip(actual, predicted):
+        print(f"actual={a}, predicted={p}")
+
+
+# =========================
+# MAIN
+# =========================
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Path to input image")
-    parser.add_argument(
-        "--templates", nargs="+", required=True,
-        help="One or more template files, e.g. 4 rotations"
-    )
-    parser.add_argument(
-        "--threshold", type=float, default=0.86,
-        help="Match threshold, usually 0.82-0.90"
-    )
-    parser.add_argument(
-        "--nms", type=float, default=0.25,
-        help="IoU threshold for non-max suppression"
-    )
-    parser.add_argument(
-        "--output", default="detections.png",
-        help="Output image with marked detections"
-    )
-    parser.add_argument(
-        "--json", default="detections.json",
-        help="Output json file"
-    )
-    args = parser.parse_args()
-
-    image = cv2.imread(args.image, cv2.IMREAD_COLOR)
+    image = cv2.imread(IMAGE_PATH)
     if image is None:
-        raise FileNotFoundError(f"Could not read image: {args.image}")
+        raise FileNotFoundError(f"Kunne ikke læse billede: {IMAGE_PATH}")
 
-    all_detections = []
-    per_template_max = {}
+    templates = load_templates(TEMPLATES_DIR)
+    print(f"Loaded {len(templates)} templates")
 
-    for template_path in args.templates:
-        template_bgr, mask = load_template(template_path)
-        detections, result = match_single_template(
-            image, template_bgr, mask, args.threshold, template_path
-        )
-        all_detections.extend(detections)
-        _, max_val, _, max_loc = cv2.minMaxLoc(result)
-        per_template_max[Path(template_path).name] = {
-            "max_score": float(max_val),
-            "best_location": [int(max_loc[0]), int(max_loc[1])]
-        }
+    counts, detections_per_tile = count_crowns_per_tile(
+        image,
+        templates,
+        threshold=MATCH_THRESHOLD,
+        min_distance=MIN_DISTANCE
+    )
 
-    final_detections = non_max_suppression(all_detections, overlap_threshold=args.nms)
+    print("\nKroner pr. tile:")
+    for row in counts:
+        print(row)
 
-    marked = draw_detections(image, final_detections)
-    cv2.imwrite(args.output, marked)
+    out = draw_tile_results(image, counts, detections_per_tile)
+    cv2.imwrite("tile_crown_counts.png", out)
+    print("\nGemte output-billede som: tile_crown_counts.png")
 
-    payload = {
-        "image": str(args.image),
-        "templates": [str(t) for t in args.templates],
-        "threshold": args.threshold,
-        "nms_iou_threshold": args.nms,
-        "count": len(final_detections),
-        "detections": final_detections,
-        "best_match_per_template": per_template_max,
-    }
-
-    with open(args.json, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    print(f"Saved marked image to: {args.output}")
-    print(f"Saved detections json to: {args.json}")
-    print(f"Found {len(final_detections)} detections")
-    for i, det in enumerate(final_detections, start=1):
-        print(
-            f'#{i}: template={det["template"]}, score={det["score"]:.3f}, '
-            f'x={det["x"]}, y={det["y"]}, center=({det["center_x"]}, {det["center_y"]})'
-        )
+    if CSV_PATH is not None:
+        evaluate_against_csv(counts, CSV_PATH, Path(IMAGE_PATH).name)
 
 
 if __name__ == "__main__":
