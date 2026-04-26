@@ -8,7 +8,7 @@ from pathlib import Path
 # =========================
 IMAGE_PATH = "King Domino dataset/73.jpg"
 TEMPLATES_DIR = "templates"
-CSV_PATH = "tiles_hsv.csv"   # valgfri, sæt til None hvis du ikke vil evaluere
+CSV_PATH = None   # valgfri, sæt til None hvis du ikke vil evaluere
 MATCH_THRESHOLD = 0.91
 MIN_DISTANCE = 10            # minimum afstand mellem to kroner i samme tile
 GRID_SIZE = 5
@@ -194,6 +194,25 @@ def count_crowns_per_tile(image_bgr, templates, threshold=0.82, min_distance=10)
 
     return counts, detections_per_tile
 
+def generate_crown_grid(image_path,
+                        templates_dir=TEMPLATES_DIR,
+                        threshold=MATCH_THRESHOLD,
+                        min_distance=MIN_DISTANCE):
+    
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Kunne ikke læse billede: {image_path}")
+
+    templates = load_templates(templates_dir)
+
+    counts, _ = count_crowns_per_tile(
+        image,
+        templates,
+        threshold=threshold,
+        min_distance=min_distance
+    )
+
+    return counts  # ← this is your 5x5 crown_grid
 
 # =========================
 # TEGN RESULTAT

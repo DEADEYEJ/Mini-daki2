@@ -1,14 +1,8 @@
 import Tilegridder as TG
+import templatematching as TM
 
-image_path = r"king Domino dataset\1.jpg"
 
-# Temp CrownGrid
-def get_crown_grid():
-    return [[0,0,0,0,0],
-            [0,0,0,1,0],
-            [0,1,0,0,0],
-            [0,2,0,2,1],
-            [0,1,0,1,0]]
+image_path = r"king Domino dataset\4.jpg"
 
 # DFS to find connected regions of the same terrain type
 def find_regions(terrain_grid):
@@ -44,6 +38,10 @@ def find_regions(terrain_grid):
                 regions.append((terrain, region_tiles))
     return regions
 
+def print_grid(grid, title="Grid"):
+    print(f"\n{title}:\n")
+    for row in grid:
+        print(" | ".join(f"{str(cell):^5}" for cell in row))
 
 def score_regions(regions, crown_grid):
     total_score = 0
@@ -53,7 +51,7 @@ def score_regions(regions, crown_grid):
         crowns = sum(crown_grid[y][x] for y, x in tiles)
         score = size * crowns
 
-        #print(f"{terrain}: size={size}, crowns={crowns}, score={score}")
+        print(f"{terrain}: size={size}, crowns={crowns}, score={score}")
 
         total_score += score
     return total_score
@@ -61,7 +59,10 @@ def score_regions(regions, crown_grid):
     
 def main():
     terrain = TG.terrain_grid(image_path)
-    crowns = get_crown_grid()
+    crowns = TM.generate_crown_grid(image_path)
+
+    print_grid(terrain, "Terrain Grid" )
+    print_grid(crowns, "Crown Grid")
 
     regions = find_regions(terrain)
     total_score = score_regions(regions, crowns)
