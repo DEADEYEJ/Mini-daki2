@@ -12,11 +12,9 @@ df.dropna(subset=['h', 's', 'v', 'target'], inplace=True)
 X = df[['h','s','v']].values
 y = df['target'].values
 
-
 k = 11
 knn_classifier = KNeighborsClassifier(n_neighbors=k)
 knn_classifier.fit(X, y)
-
 
 def main():
     image_path = r"King Domino dataset\50.jpg"

@@ -2,7 +2,7 @@ import Tilegridder as TG
 import templatematching as TM
 
 
-image_path = r"king Domino dataset\4.jpg"
+image_path = r"KingDominoTest\6.jpg"
 
 # DFS to find connected regions of the same terrain type
 def find_regions(terrain_grid):
